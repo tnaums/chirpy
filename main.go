@@ -27,10 +27,21 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 }
 
+func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request){
+	count := fmt.Sprintf("%d", cfg.fileserverHits.Load())
+	w.Write([]byte("Hits: " + count + "\n"))
+}
+
+func (cfg *apiConfig) resetHits(w http.ResponseWriter, r *http.Request){
+	cfg.fileserverHits.Store(0)
+	count := fmt.Sprintf("%d", cfg.fileserverHits.Load())	
+	w.Write([]byte("Hits: " + count + "\n"))
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
-		fmt.Printf("Going through middleware: Total hits: %d\n", cfg.fileserverHits)
+		fmt.Printf("Going through middleware: Total hits: %v\n", cfg.fileserverHits.Load())
 		next.ServeHTTP(w, r)
 	})
 }
@@ -48,7 +59,9 @@ func main() {
 	th := http.HandlerFunc(timeHandler)
 	re := http.HandlerFunc(readinessEndpoint)
 	hw := http.HandlerFunc(helloHandler)
-
+	rm := http.HandlerFunc(config.reportMetrics)
+	reset := http.HandlerFunc(config.resetHits)
+	
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
@@ -57,6 +70,8 @@ func main() {
 	mux.Handle("/time", th)
 	mux.Handle("/healthz", re)
 	mux.Handle("/hello", hw)
+	mux.Handle("/metrics", rm)
+	mux.Handle("/reset", reset)
 
 	s := &http.Server{
 		Addr:    ":" + port,
