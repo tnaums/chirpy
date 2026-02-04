@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+	"strings"
 )
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
@@ -41,15 +42,39 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, 400, "Chirp is too long")
 	} else {
 		cleaned := cleanChirp(params.Body)
-		fmt.Println(cleaned)
-		respondWithJSON(w, 200)
+		respondWithCleaned(w, 200, cleaned)
 	}
 }
 
 func cleanChirp(msg string) string{
-	return msg
+	wordSlice := strings.Split(msg, " ")
+
+	for idx, word := range wordSlice {
+		lowerString := strings.ToLower(word)		
+		if lowerString == "kerfuffle" || lowerString == "sharbert" || lowerString == "fornax" {
+			wordSlice[idx] = "****"
+		}
+	}
+	return strings.Join(wordSlice, " ")
 }
 
+func respondWithCleaned(w http.ResponseWriter, code int, cleaned string) {
+	w.WriteHeader(code)
+	type returnVals struct {
+		CleanedBody string `json:"cleaned_body"`
+	}
+	respBody := returnVals{
+		CleanedBody: cleaned,
+	}
+	dat, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+	}
+	w.Header().Set("Content-Type", "application/json")	
+	w.Write([]byte(dat))		
+}
 func respondWithJSON(w http.ResponseWriter, code int) {
 	w.WriteHeader(code)
 	type returnVals struct {
