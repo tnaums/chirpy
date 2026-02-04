@@ -1,15 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync/atomic"
 	"time"
-	"fmt"
 )
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("Hello, world!\n"))
+	w.Write([]byte("And a good day to you!\n"))
 }
 
 func timeHandler(w http.ResponseWriter, r *http.Request) {
@@ -23,18 +24,88 @@ func readinessEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
+func validateChirp(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	if len(params.Body) >140 {
+		respondWithError(w, 400, "Chirp is too long")
+	} else {
+		cleaned := cleanChirp(params.Body)
+		fmt.Println(cleaned)
+		respondWithJSON(w, 200)
+	}
+}
+
+func cleanChirp(msg string) string{
+	return msg
+}
+
+func respondWithJSON(w http.ResponseWriter, code int) {
+	w.WriteHeader(code)
+	type returnVals struct {
+		Valid bool `json:"valid"`
+	}
+	respBody := returnVals{
+		Valid: true,
+	}
+	dat, err := json.Marshal(respBody)
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+	}
+	w.Header().Set("Content-Type", "application/json")	
+	w.Write([]byte(dat))	
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.WriteHeader(code)
+	type returnVals struct {
+		Error string `json:"error"`
+	}
+	respBody := returnVals{
+		Error: msg,
+	}
+	dat, err := json.Marshal(respBody)
+	if err != nil {
+			log.Printf("Error marshalling JSON: %s", err)
+			w.WriteHeader(500)
+			return
+	}
+	w.Header().Set("Content-Type", "application/json")	
+	w.Write([]byte(dat))
+}
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
 }
 
-func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request){
-	count := fmt.Sprintf("%d", cfg.fileserverHits.Load())
-	w.Write([]byte("Hits: " + count + "\n"))
+func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "text/html")
+	w.WriteHeader(http.StatusOK)
+	output := "<html>\n"
+	output = output + "  <body>\n"
+	output = output + "    <h1>Welcome, Chirpy Admin</h1>\n"
+	counter := fmt.Sprintf("    <p>Chirpy has been visited %d times!</p>\n", cfg.fileserverHits.Load())
+	output = output + counter
+	output = output + "  </body>\n"
+	output = output + "</html>\n"
+	w.Write([]byte(output))
 }
 
-func (cfg *apiConfig) resetHits(w http.ResponseWriter, r *http.Request){
+func (cfg *apiConfig) resetHits(w http.ResponseWriter, r *http.Request) {
 	cfg.fileserverHits.Store(0)
-	count := fmt.Sprintf("%d", cfg.fileserverHits.Load())	
+	count := fmt.Sprintf("%d", cfg.fileserverHits.Load())
 	w.Write([]byte("Hits: " + count + "\n"))
 }
 
@@ -61,17 +132,19 @@ func main() {
 	hw := http.HandlerFunc(helloHandler)
 	rm := http.HandlerFunc(config.reportMetrics)
 	reset := http.HandlerFunc(config.resetHits)
-	
+	valchirp := http.HandlerFunc(validateChirp)
+
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
 	mux.Handle("/app/", http.StripPrefix("/app/", config.middlewareMetricsInc(http.FileServer(http.Dir(filepathRoot)))))
-	mux.Handle("/foo", rh)
+	mux.Handle("/api/foo", rh)
 	mux.Handle("/time", th)
-	mux.Handle("/healthz", re)
+	mux.Handle("GET /api/healthz", re)
 	mux.Handle("/hello", hw)
-	mux.Handle("/metrics", rm)
-	mux.Handle("/reset", reset)
+	mux.Handle("GET /admin/metrics", rm)
+	mux.Handle("POST /admin/reset", reset)
+	mux.Handle("POST /api/validate_chirp", valchirp)
 
 	s := &http.Server{
 		Addr:    ":" + port,
