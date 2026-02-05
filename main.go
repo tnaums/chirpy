@@ -1,13 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
-	"strings"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/tnaums/chirpy/internal/database"
 )
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +44,7 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(params.Body) >140 {
+	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
 	} else {
 		cleaned := cleanChirp(params.Body)
@@ -46,11 +52,11 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func cleanChirp(msg string) string{
+func cleanChirp(msg string) string {
 	wordSlice := strings.Split(msg, " ")
 
 	for idx, word := range wordSlice {
-		lowerString := strings.ToLower(word)		
+		lowerString := strings.ToLower(word)
 		if lowerString == "kerfuffle" || lowerString == "sharbert" || lowerString == "fornax" {
 			wordSlice[idx] = "****"
 		}
@@ -69,11 +75,11 @@ func respondWithCleaned(w http.ResponseWriter, code int, cleaned string) {
 	dat, err := json.Marshal(respBody)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
-			w.WriteHeader(500)
-			return
+		w.WriteHeader(500)
+		return
 	}
-	w.Header().Set("Content-Type", "application/json")	
-	w.Write([]byte(dat))		
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
 }
 func respondWithJSON(w http.ResponseWriter, code int) {
 	w.WriteHeader(code)
@@ -86,11 +92,11 @@ func respondWithJSON(w http.ResponseWriter, code int) {
 	dat, err := json.Marshal(respBody)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
-			w.WriteHeader(500)
-			return
+		w.WriteHeader(500)
+		return
 	}
-	w.Header().Set("Content-Type", "application/json")	
-	w.Write([]byte(dat))	
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -103,16 +109,17 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	}
 	dat, err := json.Marshal(respBody)
 	if err != nil {
-			log.Printf("Error marshalling JSON: %s", err)
-			w.WriteHeader(500)
-			return
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
 	}
-	w.Header().Set("Content-Type", "application/json")	
+	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(dat))
 }
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	queries *database.Queries
 }
 
 func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +153,19 @@ func main() {
 	const port = "8080"
 	const filepathRoot = "."
 
-	config := apiConfig{}
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("error connecting to db: %v", err)
+	}
+	defer db.Close()
+
+	dbQueries := database.New(db)
+
+	config := apiConfig{
+		queries: dbQueries,
+	}
 	// use the http.NewServerMux() function to create an empty servemux
 	mux := http.NewServeMux()
 
