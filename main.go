@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,10 +12,26 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/tnaums/chirpy/internal/database"
 )
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+type Chirp struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body string `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
+}
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("And a good day to you!\n"))
@@ -119,7 +136,8 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	queries *database.Queries
+	queries        *database.Queries
+	platform string
 }
 
 func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +159,18 @@ func (cfg *apiConfig) resetHits(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Hits: " + count + "\n"))
 }
 
+func (cfg *apiConfig) resetUsers(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		log.Printf("Operation not allowed")
+		w.WriteHeader(403)
+	}
+	err := cfg.queries.DeleteUsers(context.Background())
+	if err != nil {
+		log.Printf("couldn't delete users: %w", err)
+	}
+	w.Write([]byte("Database reset successfully!\n"))
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -149,12 +179,102 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	// validate that chirp is not too long
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp is too long")
+		return
+	}
+
+	// Add chirp to the chirps table
+	newChirp, err := cfg.queries.CreateChirp(context.Background(), database.CreateChirpParams{
+		Body: params.Body,
+		UserID: params.UserID,
+	})
+	if err != nil {
+		log.Printf("couldn't create feed follow: %w", err)
+	}
+
+	mainChirp := Chirp{
+		ID: newChirp.ID,
+		CreatedAt: newChirp.CreatedAt,
+		UpdatedAt: newChirp.UpdatedAt,
+		Body: newChirp.Body,
+		UserID: newChirp.UserID,
+	}
+
+	
+	dat, err := json.MarshalIndent(mainChirp, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(201)	
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
+}
+
+func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	user, err := cfg.queries.CreateUser(context.Background(), params.Email)
+	if err != nil {
+		log.Printf("couldn't create user: %w", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	mainUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	dat, err := json.MarshalIndent(mainUser, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(201)	
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))	
+
+}
+
 func main() {
 	const port = "8080"
 	const filepathRoot = "."
 
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	pf := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error connecting to db: %v", err)
@@ -165,6 +285,7 @@ func main() {
 
 	config := apiConfig{
 		queries: dbQueries,
+		platform: pf,
 	}
 	// use the http.NewServerMux() function to create an empty servemux
 	mux := http.NewServeMux()
@@ -175,9 +296,12 @@ func main() {
 	re := http.HandlerFunc(readinessEndpoint)
 	hw := http.HandlerFunc(helloHandler)
 	rm := http.HandlerFunc(config.reportMetrics)
-	reset := http.HandlerFunc(config.resetHits)
+	//	reset := http.HandlerFunc(config.resetHits)
+	resetdb := http.HandlerFunc(config.resetUsers)
 	valchirp := http.HandlerFunc(validateChirp)
-
+	ru := http.HandlerFunc(config.registerUser)
+	chirpsv := http.HandlerFunc(config.chirpSave)
+	
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
@@ -187,9 +311,10 @@ func main() {
 	mux.Handle("GET /api/healthz", re)
 	mux.Handle("/hello", hw)
 	mux.Handle("GET /admin/metrics", rm)
-	mux.Handle("POST /admin/reset", reset)
+	mux.Handle("POST /admin/reset", resetdb)
 	mux.Handle("POST /api/validate_chirp", valchirp)
-
+	mux.Handle("POST /api/users", ru)
+	mux.Handle("POST /api/chirps", chirpsv)
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
