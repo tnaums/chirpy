@@ -16,6 +16,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/tnaums/chirpy/internal/database"
+	"github.com/tnaums/chirpy/internal/auth"
 )
 
 type User struct {
@@ -301,7 +302,9 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email string `json:"email"`
-	}
+		Password string `json:"password"`
+		}
+
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -311,7 +314,18 @@ func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := cfg.queries.CreateUser(context.Background(), params.Email)
+	// change password from plain text to hashed version
+	hash, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error creating password hash: %w", err)
+		w.WriteHeader(500)
+		return
+	}
+	
+	user, err := cfg.queries.CreateUser(context.Background(), database.CreateUserParams{
+		Email: params.Email,
+		HashedPassword: hash,
+	})
 	if err != nil {
 		log.Printf("couldn't create user: %w", err)
 		w.WriteHeader(500)
