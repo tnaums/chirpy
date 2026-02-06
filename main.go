@@ -179,6 +179,75 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+func (cfg *apiConfig) chirpById(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(r.URL.Path)
+	id := r.PathValue("chirpID")
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		log.Printf("couldn't create uid from id")
+	}
+
+	
+	c, err := cfg.queries.ChirpByID(context.Background(), uid)
+	if err != nil {
+		log.Printf("Error retrieving chirp by id: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+
+	mainChirp := Chirp{
+		ID: c.ID,
+		CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
+		Body: c.Body,
+		UserID: c.UserID,
+	}
+
+	
+	dat, err := json.MarshalIndent(mainChirp, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(200)	
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
+
+}
+
+func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
+	var convertedChirps []Chirp
+	allChirps, err := cfg.queries.ListChirps(context.Background())
+	if err != nil {
+		log.Printf("couldn't retrieve chirps: %w", err)
+	}
+
+	for _, c := range allChirps{
+		fmt.Println(c.CreatedAt)
+
+		mainChirp := Chirp{
+			ID: c.ID,
+			CreatedAt: c.CreatedAt,
+			UpdatedAt: c.UpdatedAt,
+			Body: c.Body,
+			UserID: c.UserID,
+		}
+		convertedChirps = append(convertedChirps, mainChirp)
+	}
+	fmt.Println(convertedChirps[0])
+	
+	dat, err := json.MarshalIndent(convertedChirps, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(200)	
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))	
+}
+
 func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Body string `json:"body"`
@@ -301,6 +370,8 @@ func main() {
 	valchirp := http.HandlerFunc(validateChirp)
 	ru := http.HandlerFunc(config.registerUser)
 	chirpsv := http.HandlerFunc(config.chirpSave)
+	chirpget := http.HandlerFunc(config.chirpGet)
+	chirpbyid := http.HandlerFunc(config.chirpById)
 	
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
@@ -315,6 +386,8 @@ func main() {
 	mux.Handle("POST /api/validate_chirp", valchirp)
 	mux.Handle("POST /api/users", ru)
 	mux.Handle("POST /api/chirps", chirpsv)
+	mux.Handle("GET /api/chirps", chirpget)
+	mux.Handle("GET /api/chirps/{chirpID}", chirpbyid)
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
