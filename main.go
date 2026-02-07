@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-	"github.com/tnaums/chirpy/internal/database"
 	"github.com/tnaums/chirpy/internal/auth"
+	"github.com/tnaums/chirpy/internal/database"
 )
 
 type User struct {
@@ -27,11 +27,11 @@ type User struct {
 }
 
 type Chirp struct {
-	ID uuid.UUID `json:"id"`
+	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Body string `json:"body"`
-	UserID uuid.UUID `json:"user_id"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 func helloHandler(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +138,8 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries        *database.Queries
-	platform string
+	platform       string
+	secretPhrase   string
 }
 
 func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +189,6 @@ func (cfg *apiConfig) chirpById(w http.ResponseWriter, r *http.Request) {
 		log.Printf("couldn't create uid from id")
 	}
 
-	
 	c, err := cfg.queries.ChirpByID(context.Background(), uid)
 	if err != nil {
 		log.Printf("Error retrieving chirp by id: %s", err)
@@ -197,21 +197,20 @@ func (cfg *apiConfig) chirpById(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mainChirp := Chirp{
-		ID: c.ID,
+		ID:        c.ID,
 		CreatedAt: c.CreatedAt,
 		UpdatedAt: c.UpdatedAt,
-		Body: c.Body,
-		UserID: c.UserID,
+		Body:      c.Body,
+		UserID:    c.UserID,
 	}
 
-	
 	dat, err := json.MarshalIndent(mainChirp, "", " ")
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(200)	
+	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(dat))
 
@@ -224,37 +223,37 @@ func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("couldn't retrieve chirps: %w", err)
 	}
 
-	for _, c := range allChirps{
+	for _, c := range allChirps {
 		fmt.Println(c.CreatedAt)
 
 		mainChirp := Chirp{
-			ID: c.ID,
+			ID:        c.ID,
 			CreatedAt: c.CreatedAt,
 			UpdatedAt: c.UpdatedAt,
-			Body: c.Body,
-			UserID: c.UserID,
+			Body:      c.Body,
+			UserID:    c.UserID,
 		}
 		convertedChirps = append(convertedChirps, mainChirp)
 	}
 	fmt.Println(convertedChirps[0])
-	
+
 	dat, err := json.MarshalIndent(convertedChirps, "", " ")
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(200)	
+	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(dat))	
+	w.Write([]byte(dat))
 }
 
 func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
 	}
-	
+
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 	err := decoder.Decode(&params)
@@ -272,7 +271,7 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 
 	// Add chirp to the chirps table
 	newChirp, err := cfg.queries.CreateChirp(context.Background(), database.CreateChirpParams{
-		Body: params.Body,
+		Body:   params.Body,
 		UserID: params.UserID,
 	})
 	if err != nil {
@@ -280,30 +279,81 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mainChirp := Chirp{
-		ID: newChirp.ID,
+		ID:        newChirp.ID,
 		CreatedAt: newChirp.CreatedAt,
 		UpdatedAt: newChirp.UpdatedAt,
-		Body: newChirp.Body,
-		UserID: newChirp.UserID,
+		Body:      newChirp.Body,
+		UserID:    newChirp.UserID,
 	}
 
-	
 	dat, err := json.MarshalIndent(mainChirp, "", " ")
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(201)	
+	w.WriteHeader(201)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(dat))
 }
 
+func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	luser, err := cfg.queries.GetUserByEmail(context.Background(), params.Email)
+	if err != nil {
+		log.Println("Incorrect email or password")
+		w.WriteHeader(401)
+		return
+	}
+
+	check, err2 := auth.CheckPasswordHash(params.Password, luser.HashedPassword)
+	if check == false {
+		log.Println("Incorrect email or password")
+		w.WriteHeader(401)
+		return
+	}
+	if err2 != nil {
+		log.Printf("Error checking password hash")
+		return
+	}
+
+	mainUser := User{
+		ID:        luser.ID,
+		CreatedAt: luser.CreatedAt,
+		UpdatedAt: luser.UpdatedAt,
+		Email:     luser.Email,
+	}
+
+	dat, err := json.MarshalIndent(mainUser, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
+
+}
+
 func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
-		}
+	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -321,9 +371,9 @@ func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
-	
+
 	user, err := cfg.queries.CreateUser(context.Background(), database.CreateUserParams{
-		Email: params.Email,
+		Email:          params.Email,
 		HashedPassword: hash,
 	})
 	if err != nil {
@@ -345,9 +395,9 @@ func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(201)	
+	w.WriteHeader(201)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(dat))	
+	w.Write([]byte(dat))
 
 }
 
@@ -358,6 +408,7 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	pf := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error connecting to db: %v", err)
@@ -367,8 +418,9 @@ func main() {
 	dbQueries := database.New(db)
 
 	config := apiConfig{
-		queries: dbQueries,
-		platform: pf,
+		queries:      dbQueries,
+		platform:     pf,
+		secretPhrase: secret,
 	}
 	// use the http.NewServerMux() function to create an empty servemux
 	mux := http.NewServeMux()
@@ -386,7 +438,8 @@ func main() {
 	chirpsv := http.HandlerFunc(config.chirpSave)
 	chirpget := http.HandlerFunc(config.chirpGet)
 	chirpbyid := http.HandlerFunc(config.chirpById)
-	
+	login := http.HandlerFunc(config.loginUser)
+
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
@@ -402,6 +455,8 @@ func main() {
 	mux.Handle("POST /api/chirps", chirpsv)
 	mux.Handle("GET /api/chirps", chirpget)
 	mux.Handle("GET /api/chirps/{chirpID}", chirpbyid)
+	mux.Handle("POST /api/login", login)
+
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
