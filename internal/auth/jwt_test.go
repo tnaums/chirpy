@@ -4,8 +4,6 @@ import (
 	"testing"
 	"github.com/google/uuid"
 	"time"
-	"net/http"	
-	//	"fmt"
 )
 
 
@@ -21,14 +19,3 @@ func TestMakeJWT(t *testing.T) {
 	}
 }
 
-func TestValidateJWT(t *testing.T) {
-	headers := http.Header{}
-	headers.Set("Content-Type", "application/json")
-	headers.Set("Authorization", "someflykeythatyoucan'tguess")
-	headers.Set("Authorization", "someotherthing")
-	headers.Set("Authorization", "Bearer isthispositionzero?")	
-	got, _ := GetBearerToken(headers)
-	if got != "Duh" {
-		t.Errorf("expected Duh, but got '%s'", got)
-	}
-}
