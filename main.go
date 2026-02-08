@@ -24,6 +24,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 type Chirp struct {
@@ -249,20 +250,31 @@ func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
+	token, _ := auth.GetBearerToken(r.Header)
+	fmt.Printf("Token is: %s\n", token)
+	tokenid, err := auth.ValidateJWT(token, cfg.secretPhrase)
+	if err != nil {
+		log.Printf("token is invalid: %s", tokenid)
+		w.WriteHeader(401)
+		return
+	}
+	
 	type parameters struct {
 		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		w.WriteHeader(500)
 		return
 	}
 
+	//	fmt.Println(params.UserID)
+	fmt.Println(params.Body)
+	
 	// validate that chirp is not too long
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
@@ -272,7 +284,7 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 	// Add chirp to the chirps table
 	newChirp, err := cfg.queries.CreateChirp(context.Background(), database.CreateChirpParams{
 		Body:   params.Body,
-		UserID: params.UserID,
+		UserID: tokenid,
 	})
 	if err != nil {
 		log.Printf("couldn't create feed follow: %w", err)
@@ -301,7 +313,9 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
+	
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -311,6 +325,18 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
+
+	if params.ExpiresInSeconds > 3600 {
+		params.ExpiresInSeconds = 3600
+	}
+
+	if params.ExpiresInSeconds == 0 {
+		params.ExpiresInSeconds = 3600
+	}
+
+	expire := time.Duration(params.ExpiresInSeconds) * time.Second
+
+	//	fmt.Println(expire)
 
 	luser, err := cfg.queries.GetUserByEmail(context.Background(), params.Email)
 	if err != nil {
@@ -330,11 +356,16 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
+	// Create JWT
+	jwt, _ := auth.MakeJWT(luser.ID, cfg.secretPhrase, expire)
+	//	fmt.Println(jwt)
 	mainUser := User{
 		ID:        luser.ID,
 		CreatedAt: luser.CreatedAt,
 		UpdatedAt: luser.UpdatedAt,
 		Email:     luser.Email,
+		Token:     jwt,
 	}
 
 	dat, err := json.MarshalIndent(mainUser, "", " ")
