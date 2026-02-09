@@ -20,11 +20,12 @@ import (
 )
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -258,9 +259,9 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		return
 	}
-	
+
 	type parameters struct {
-		Body   string    `json:"body"`
+		Body string `json:"body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -274,7 +275,7 @@ func (cfg *apiConfig) chirpSave(w http.ResponseWriter, r *http.Request) {
 
 	//	fmt.Println(params.UserID)
 	fmt.Println(params.Body)
-	
+
 	// validate that chirp is not too long
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long")
@@ -313,9 +314,7 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
-		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
-	
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
@@ -326,17 +325,8 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if params.ExpiresInSeconds > 3600 {
-		params.ExpiresInSeconds = 3600
-	}
-
-	if params.ExpiresInSeconds == 0 {
-		params.ExpiresInSeconds = 3600
-	}
-
-	expire := time.Duration(params.ExpiresInSeconds) * time.Second
-
-	//	fmt.Println(expire)
+	// JWT expires in 1 hour
+	expire := time.Duration(3600) * time.Second
 
 	luser, err := cfg.queries.GetUserByEmail(context.Background(), params.Email)
 	if err != nil {
@@ -351,21 +341,41 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		return
 	}
+
 	if err2 != nil {
 		log.Printf("Error checking password hash")
 		return
 	}
 
-
 	// Create JWT
 	jwt, _ := auth.MakeJWT(luser.ID, cfg.secretPhrase, expire)
-	//	fmt.Println(jwt)
+
+	// Create refresh token and store in database
+
+	// Generate the token
+	rt, err := auth.MakeRefreshToken()
+	if err != nil {
+		log.Printf("Error generating refresh token")
+	}
+
+	exp := time.Now().AddDate(0, 0, 60)
+
+	_, err = cfg.queries.CreateRefreshToken(context.Background(), database.CreateRefreshTokenParams{
+		Token: rt,
+		UserID: luser.ID,
+		ExpiresAt: exp,
+	})
+	if err != nil {
+		log.Printf("Error saving refresh token")
+	}
+	
 	mainUser := User{
-		ID:        luser.ID,
-		CreatedAt: luser.CreatedAt,
-		UpdatedAt: luser.UpdatedAt,
-		Email:     luser.Email,
-		Token:     jwt,
+		ID:           luser.ID,
+		CreatedAt:    luser.CreatedAt,
+		UpdatedAt:    luser.UpdatedAt,
+		Email:        luser.Email,
+		Token:        jwt,
+		RefreshToken: rt,
 	}
 
 	dat, err := json.MarshalIndent(mainUser, "", " ")
