@@ -456,6 +456,15 @@ func (cfg *apiConfig) refreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Println()
+	fmt.Println(refreshTokenStruct.RevokedAt.Valid)
+	fmt.Println()
+	if refreshTokenStruct.RevokedAt.Valid {
+		log.Printf("refresh token revoked")
+		w.WriteHeader(401)
+		return
+	}
+	
 	if refreshTokenStruct.ExpiresAt.Before(time.Now()) {
 		log.Printf("refresh token expired")
 		w.WriteHeader(401)
@@ -481,6 +490,96 @@ func (cfg *apiConfig) refreshToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	w.Header().Set("Content-Type", "application/json")	
 	w.Write([]byte(dat))
+}
+
+func (cfg *apiConfig) revokeRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("No refresh token found in header")
+	}
+
+	// Lookup refresh token in database
+	_, err = cfg.queries.GetRefreshToken(context.Background(), refreshToken)
+	if err != nil {
+		log.Printf("refresh token not in database", err)
+		w.WriteHeader(401)
+		return
+	}
+	
+	err = cfg.queries.RevokeToken(context.Background(), refreshToken)
+	if err != nil {
+		log.Printf("failed to revoke token")
+		return
+	}
+	w.WriteHeader(204)
+
+}
+func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("No access token found in header")
+	}
+
+	// get the userid from token (tokenid)
+	tokenid, err := auth.ValidateJWT(token, cfg.secretPhrase)
+	if err != nil {
+		log.Printf("token is invalid: %s", tokenid)
+		w.WriteHeader(401)
+		return
+	}
+
+	// decode password and/or email from body
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	// change password from plain text to hashed version
+	hash, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("Error creating password hash: %w", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	// update email and password in database
+	user, err := cfg.queries.UserUpdate(context.Background(), database.UserUpdateParams{
+		ID:             tokenid,
+		Email:          params.Email,
+		HashedPassword: hash,
+	})
+	if err != nil {
+		log.Printf("couldn't update user: %w", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	mainUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+
+	dat, err := json.MarshalIndent(mainUser, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(dat))
+
 }
 
 func main() {
@@ -522,6 +621,8 @@ func main() {
 	chirpbyid := http.HandlerFunc(config.chirpById)
 	login := http.HandlerFunc(config.loginUser)
 	refresh := http.HandlerFunc(config.refreshToken)
+	revoke := http.HandlerFunc(config.revokeRefresh)
+	updateuser := http.HandlerFunc(config.updateUser)
 
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
@@ -535,11 +636,14 @@ func main() {
 	mux.Handle("POST /admin/reset", resetdb)
 	mux.Handle("POST /api/validate_chirp", valchirp)
 	mux.Handle("POST /api/users", ru)
+	mux.Handle("PUT /api/users", updateuser)
 	mux.Handle("POST /api/chirps", chirpsv)
 	mux.Handle("GET /api/chirps", chirpget)
 	mux.Handle("GET /api/chirps/{chirpID}", chirpbyid)
 	mux.Handle("POST /api/login", login)
 	mux.Handle("POST /api/refresh", refresh)
+	mux.Handle("POST /api/revoke", revoke)
+
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
