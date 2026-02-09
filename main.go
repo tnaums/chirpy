@@ -218,6 +218,49 @@ func (cfg *apiConfig) chirpById(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) chirpDelete(w http.ResponseWriter, r *http.Request) {
+	// parse chirp id from url
+	id := r.PathValue("chirpID")
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		log.Printf("couldn't create uid from id")
+	}
+
+	// get userid from access token
+	token, _ := auth.GetBearerToken(r.Header)
+	tokenid, err := auth.ValidateJWT(token, cfg.secretPhrase)
+	if err != nil {
+		log.Printf("token is invalid: %s", tokenid)
+		w.WriteHeader(401)
+		return
+	}
+
+	// get chirp info from database
+	c, err := cfg.queries.ChirpByID(context.Background(), uid)
+	if err != nil {
+		log.Printf("Error retrieving chirp by id: %s", err)
+		w.WriteHeader(404)
+		return
+	}
+
+	if c.UserID != tokenid {
+		log.Printf("You are not authorized to delete that chirp")
+		w.WriteHeader(403)
+		return
+	}
+
+	// delete the chirp
+	err = cfg.queries.DeleteChirp(context.Background(), uid)
+	if err != nil {
+		log.Printf("Unable to delete chirp")
+		w.WriteHeader(404)
+		return
+	}
+	w.WriteHeader(204)
+
+}
+
+
 func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
 	var convertedChirps []Chirp
 	allChirps, err := cfg.queries.ListChirps(context.Background())
@@ -623,7 +666,8 @@ func main() {
 	refresh := http.HandlerFunc(config.refreshToken)
 	revoke := http.HandlerFunc(config.revokeRefresh)
 	updateuser := http.HandlerFunc(config.updateUser)
-
+	chirpdelete := http.HandlerFunc(config.chirpDelete)
+	
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
@@ -640,6 +684,7 @@ func main() {
 	mux.Handle("POST /api/chirps", chirpsv)
 	mux.Handle("GET /api/chirps", chirpget)
 	mux.Handle("GET /api/chirps/{chirpID}", chirpbyid)
+	mux.Handle("DELETE /api/chirps/{chirpID}", chirpdelete)	
 	mux.Handle("POST /api/login", login)
 	mux.Handle("POST /api/refresh", refresh)
 	mux.Handle("POST /api/revoke", revoke)
