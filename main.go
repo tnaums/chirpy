@@ -442,6 +442,47 @@ func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) refreshToken(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("No refresh token found in header")
+	}
+
+	// Lookup refresh token in database
+	refreshTokenStruct, err := cfg.queries.GetRefreshToken(context.Background(), refreshToken)
+	if err != nil {
+		log.Printf("refresh token not in database", err)
+		w.WriteHeader(401)
+		return
+	}
+
+	if refreshTokenStruct.ExpiresAt.Before(time.Now()) {
+		log.Printf("refresh token expired")
+		w.WriteHeader(401)
+		return
+	}
+
+	expire := time.Duration(3600) * time.Second
+	jwt, _ := auth.MakeJWT(refreshTokenStruct.UserID, cfg.secretPhrase, expire)
+
+	type parameters struct {
+		Token string `json:"token"`
+	}
+
+	params := parameters{Token: jwt,}
+	
+	dat, err := json.MarshalIndent(params, "", " ")
+	if err != nil {
+		log.Printf("Error marshalling JSON: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+	
+	w.WriteHeader(200)
+	w.Header().Set("Content-Type", "application/json")	
+	w.Write([]byte(dat))
+}
+
 func main() {
 	const port = "8080"
 	const filepathRoot = "."
@@ -480,6 +521,7 @@ func main() {
 	chirpget := http.HandlerFunc(config.chirpGet)
 	chirpbyid := http.HandlerFunc(config.chirpById)
 	login := http.HandlerFunc(config.loginUser)
+	refresh := http.HandlerFunc(config.refreshToken)
 
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
@@ -497,7 +539,7 @@ func main() {
 	mux.Handle("GET /api/chirps", chirpget)
 	mux.Handle("GET /api/chirps/{chirpID}", chirpbyid)
 	mux.Handle("POST /api/login", login)
-
+	mux.Handle("POST /api/refresh", refresh)
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
