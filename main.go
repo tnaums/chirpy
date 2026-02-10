@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -265,12 +266,40 @@ func (cfg *apiConfig) chirpDelete(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
 	var convertedChirps []Chirp
-	allChirps, err := cfg.queries.ListChirps(context.Background())
-	if err != nil {
-		log.Printf("couldn't retrieve chirps: %w", err)
+	var functionChirps []database.Chirp
+	s := r.URL.Query().Get("author_id")
+
+	sortDirection := "asc"
+	sortDirectionParam := r.URL.Query().Get("sort")
+	if sortDirectionParam == "desc" {
+		sortDirection = "desc"
 	}
 
-	for _, c := range allChirps {
+	id, _ := uuid.Parse(s)
+
+	if s == "" {
+		allChirps, err := cfg.queries.ListChirps(context.Background())
+		functionChirps = append(functionChirps, allChirps...)
+		if err != nil {
+			log.Printf("couldn't retrieve chirps: %w", err)
+		}
+	} else {
+		allChirps, err := cfg.queries.ListUserChirps(context.Background(), id)
+		functionChirps = append(functionChirps, allChirps...)		
+		if err != nil {
+			log.Printf("couldn't retrieve chirps for user %s", s)
+		}
+	}
+
+	sort.Slice(functionChirps, func(i, j int) bool {
+		if sortDirection == "desc" {
+			return functionChirps[i].CreatedAt.After(functionChirps[j].CreatedAt)
+		}
+		return functionChirps[i].CreatedAt.Before(functionChirps[j].CreatedAt)
+	})
+
+	
+	for _, c := range functionChirps {
 		fmt.Println(c.CreatedAt)
 
 		mainChirp := Chirp{
@@ -282,7 +311,7 @@ func (cfg *apiConfig) chirpGet(w http.ResponseWriter, r *http.Request) {
 		}
 		convertedChirps = append(convertedChirps, mainChirp)
 	}
-	fmt.Println(convertedChirps[0])
+	//	fmt.Println(convertedChirps[0])
 
 	dat, err := json.MarshalIndent(convertedChirps, "", " ")
 	if err != nil {
@@ -632,6 +661,19 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) webHooks(w http.ResponseWriter, r *http.Request) {
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		log.Printf("No authorization token found")
+		w.WriteHeader(401)
+		return
+	}
+
+	if token != cfg.polkakey {
+		log.Printf("token does not match required key")
+		w.WriteHeader(401)
+		return
+	}
+	
 	type Data struct {
 		UserID    uuid.UUID `json:"user_id"`		
 	}
@@ -642,7 +684,7 @@ func (cfg *apiConfig) webHooks(w http.ResponseWriter, r *http.Request) {
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		log.Printf("Error decoding parameters: %s", err)
 		w.WriteHeader(500)
