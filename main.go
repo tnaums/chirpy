@@ -26,6 +26,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -142,6 +143,7 @@ type apiConfig struct {
 	queries        *database.Queries
 	platform       string
 	secretPhrase   string
+	polkakey       string	
 }
 
 func (cfg *apiConfig) reportMetrics(w http.ResponseWriter, r *http.Request) {
@@ -419,6 +421,7 @@ func (cfg *apiConfig) loginUser(w http.ResponseWriter, r *http.Request) {
 		Email:        luser.Email,
 		Token:        jwt,
 		RefreshToken: rt,
+		IsChirpyRed: luser.IsChirpyRed,
 	}
 
 	dat, err := json.MarshalIndent(mainUser, "", " ")
@@ -471,6 +474,7 @@ func (cfg *apiConfig) registerUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	dat, err := json.MarshalIndent(mainUser, "", " ")
@@ -611,6 +615,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	dat, err := json.MarshalIndent(mainUser, "", " ")
@@ -625,6 +630,37 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (cfg *apiConfig) webHooks(w http.ResponseWriter, r *http.Request) {
+
+	type Data struct {
+		UserID    uuid.UUID `json:"user_id"`		
+	}
+	
+	type parameters struct {
+		Event string `json:"event"`
+		Data Data `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		log.Printf("Error decoding parameters: %s", err)
+		w.WriteHeader(500)
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+	err = cfg.queries.UpgradeUser(context.Background(), params.Data.UserID)
+	if err != nil {
+		w.WriteHeader(404)
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func main() {
 	const port = "8080"
 	const filepathRoot = "."
@@ -633,6 +669,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	pf := os.Getenv("PLATFORM")
 	secret := os.Getenv("SECRET")
+	polka := os.Getenv("POLKA_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatalf("error connecting to db: %v", err)
@@ -645,6 +682,7 @@ func main() {
 		queries:      dbQueries,
 		platform:     pf,
 		secretPhrase: secret,
+		polkakey:     polka,
 	}
 	// use the http.NewServerMux() function to create an empty servemux
 	mux := http.NewServeMux()
@@ -667,7 +705,7 @@ func main() {
 	revoke := http.HandlerFunc(config.revokeRefresh)
 	updateuser := http.HandlerFunc(config.updateUser)
 	chirpdelete := http.HandlerFunc(config.chirpDelete)
-	
+	webhooks := http.HandlerFunc(config.webHooks)
 	// Use the http.FileServer() function to create a handler
 	//	fs := http.FileServer(http.Dir(filepathRoot))
 	rh := http.RedirectHandler("http://example.org", 307)
@@ -688,7 +726,7 @@ func main() {
 	mux.Handle("POST /api/login", login)
 	mux.Handle("POST /api/refresh", refresh)
 	mux.Handle("POST /api/revoke", revoke)
-
+	mux.Handle("POST /api/polka/webhooks", webhooks)
 	s := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
